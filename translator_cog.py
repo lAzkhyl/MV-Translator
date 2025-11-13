@@ -36,7 +36,7 @@ else:
 def build_system_prompt():
     """
     Membangun System Prompt dengan Mini-Dictionary (Few-Shot/CoD).
-    Diperkuat untuk memaksa output JSON.
+    Diperkuat untuk memaksa output JSON dan meng-escape literal braces.
     """
     mini_dictionary = {
         "yg": "that/which/who",
@@ -68,8 +68,8 @@ PERATURAN UTAMA:
 KAMUS SLANG (REFERENSI KUNCI):
 {dictionary_json}
 
-Input akan berupa array JSON: `[{"id": "...", "u": "...", "t": "..."}, ...]`
-Output Anda HARUS berupa array JSON dengan format yang sama persis: `[{"id": "...", "tl": "..."}, ...]`
+Input akan berupa array JSON: `[{{\"id\": \"...\", \"u\": \"...\", \"t\": \"...\"}}, ...]`
+Output Anda HARUS berupa array JSON dengan format yang sama persis: `[{{\"id\": \"...\", \"tl\": \"...\"}}, ...]`
 """
     
     return prompt_template.format(
