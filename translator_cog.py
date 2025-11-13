@@ -5,38 +5,39 @@ import datetime
 import os
 import groq
 import json
+import time
 
-# --- 1. KONFIGURASI (GANTI INI) ---
+# --- 1. CONFIGURATION (CHANGE THIS) ---
 
-# ID Channel Indonesia (Tempat user mengetik)
+# ID Channel Indonesia (Where users type)
 SOURCE_CHANNEL_ID = 1433114079249039431
 
-# ID Thread (Tempat bot mengirim terjemahan)
+# ID Thread (Where bot sends translations)
 TARGET_THREAD_ID = 1438150645080260740
 
-# Bahasa Target (untuk API)
+# Target Language (for API)
 TARGET_LANG = "English" 
 
-# Cooldown: Seberapa lama bot mengumpulkan pesan (dalam detik)
+# Cooldown: How long the bot collects messages (in seconds)
 BATCH_COOLDOWN_SECONDS = 10 
 
-# --- 2. KONFIGURASI GROQ ---
+# --- 2. GROQ CONFIGURATION ---
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 if GROQ_API_KEY:
     groq_client = groq.AsyncGroq(api_key=GROQ_API_KEY)
     MODEL_GROQ = "llama-3.1-8b-instant" 
-    print("Translator Cog: API Key Groq berhasil dimuat.")
+    print("Translator Cog: API Key Groq successfully loaded.")
 else:
     groq_client = None
-    print("Translator Cog: WARNING!!! GROQ_API_KEY tidak ditemukan.")
+    print("Translator Cog: WARNING!!!: GROQ_API_KEY not found.")
 
-# --- 3. HELPER FUNGSI ARSITEKTUR (Berdasarkan Intel) ---
+# --- 3. ARCHITECTURE HELPER FUNCTIONS ---
 
 def build_system_prompt():
     """
-    Membangun System Prompt dengan Mini-Dictionary (Few-Shot/CoD).
-    Diperkuat untuk memaksa output JSON dan meng-escape literal braces.
+    Builds the System Prompt with a Mini-Dictionary (Few-Shot/CoD).
+    Instructs the model to return a JSON Object with a 'translations' key.
     """
     mini_dictionary = {
         "yg": "that/which/who",
@@ -56,20 +57,21 @@ def build_system_prompt():
         "sm": "with/and"
     }
     
-    # Template ini diperkuat untuk mode json_object
-    prompt_template = """Anda adalah layanan terjemahan API JSON yang sangat akurat.
-Tugas Anda adalah menerjemahkan array JSON dari chat Indonesia (slang) ke {target_lang}.
+    # This prompt is reinforced for json_object mode
+    prompt_template = """You are a JSON translation API service.
+Your task is to translate a JSON array of Indonesian chat messages (slang) into {target_lang}.
 
-PERATURAN UTAMA:
-1. Terjemahkan HANYA nilai "t" (teks) untuk setiap objek.
-2. JANGAN PERNAH meringkas. Terjemahkan 1-ke-1.
-3. Kembalikan HANYA JSON yang valid. JANGAN tambahkan teks pembuka atau penutup.
+RULES:
+1. Translate ONLY the "t" (text) value for each object.
+2. NEVER summarize. Translate 1-to-1.
+3. Return ONLY valid JSON. DO NOT add any introductory or closing text.
 
-KAMUS SLANG (REFERENSI KUNCI):
+SLANG DICTIONARY (KEY REFERENCE):
 {dictionary_json}
 
-Input akan berupa array JSON: `[{{\"id\": \"...\", \"u\": \"...\", \"t\": \"...\"}}, ...]`
-Output Anda HARUS berupa array JSON dengan format yang sama persis: `[{{\"id\": \"...\", \"tl\": \"...\"}}, ...]`
+Input will be a JSON array: `[{{\"id\": \"...\", \"u\": \"...\", \"t\": \"...\"}}, ...]`
+Your output MUST be a single JSON Object in this exact format:
+`{{\"translations\": [{{\"id\": \"...\", \"tl\": \"...\"}}, ...]}}`
 """
     
     return prompt_template.format(
@@ -79,27 +81,23 @@ Output Anda HARUS berupa array JSON dengan format yang sama persis: `[{{\"id\": 
 
 def build_translation_payload(message_batch: list) -> str:
     """
-    Mengonversi batch pesan dari Discord menjadi payload JSON minified.
+    Converts a batch of Discord messages into a minified JSON payload for the LLM.
     """
     payload = []
     for msg in message_batch:
         payload.append({
-            "id": str(msg.id), # Gunakan ID pesan untuk pemetaan
+            "id": str(msg.id), # Use message ID for mapping
             "u": msg.author.display_name, # 'u' = user
             "t": msg.content # 't' = text
         })
-    # Menggunakan minified JSON (tanpa spasi)
+    # Use minified JSON (no spaces) for max token efficiency
     return json.dumps(payload, separators=(',', ':'))
 
-# --- SKEMA LAMA DIHAPUS ---
-# Fungsi define_output_schema() dan variabel OUTPUT_SCHEMA dihapus
-# karena Groq tidak mendukung "json_schema" untuk model ini.
-
-# Simpan System Prompt saat startup
+# Load the system prompt globally on startup (efficient)
 SYSTEM_PROMPT = build_system_prompt()
 
 
-# --- 4. KELAS COG ---
+# --- 4. COG CLASS ---
 class TranslatorCog(commands.Cog):
 
     def __init__(self, bot):
@@ -110,43 +108,48 @@ class TranslatorCog(commands.Cog):
         print(f"Translator Cog: Loaded. Monitoring Channel ID {SOURCE_CHANNEL_ID}.")
         print(f"Translator Cog: Startup time set to {self.startup_time}")
 
-    # --- 5. LISTENER ON_MESSAGE (Jaring Pengumpul) ---
+    # --- 5. ON_MESSAGE LISTENER (The Collector) ---
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
 
-        # Filter (Tetap sama)
+        # Filter 1: Ignore old messages on startup
         if message.created_at < self.startup_time: return
+        # Filter 2: Ignore bots (prevents fatal loops)
         if message.author.bot: return
+        # Filter 3: Only monitor the source channel
         if message.channel.id != SOURCE_CHANNEL_ID: return
+        # Filter 4: Ignore the translation thread (prevents fatal loops)
         if message.channel.id == TARGET_THREAD_ID: return
         if message.channel.type == discord.ChannelType.public_thread and message.channel.id == TARGET_THREAD_ID:
              return
 
-        # Lolos Filter: Masukkan ke antrean batch
+        # Passed filters: Add to batch
         self.message_batch.append(message)
 
+        # Start the batch processor if it's not already running
         if self.batch_task is None:
             self.batch_task = asyncio.create_task(self.process_batch())
 
-    # --- 6. PROSESOR BATCH (Logika "Sekalian" / Cooldown) ---
+    # --- 6. BATCH PROCESSOR (The "Sekalian" Logic) ---
     async def process_batch(self):
+        # Wait X seconds to gather more messages
         await asyncio.sleep(BATCH_COOLDOWN_SECONDS)
 
         messages_to_translate = list(self.message_batch)
         self.message_batch.clear()
-        self.batch_task = None 
+        self.batch_task = None # Reset for next batch
 
         if not messages_to_translate: return
         if not groq_client:
-            print("Batching: Groq client tidak ada, proses dibatalkan.")
+            print("Batching: Groq client is not available, canceling process.")
             return
 
-        print(f"Batching: Memproses {len(messages_to_translate)} pesan...")
+        print(f"Batching: Processing {len(messages_to_translate)} messages...")
 
-        # --- 7. PERSIAPAN TRANSLATE (Format untuk Groq) ---
+        # --- 7. PREPARE TRANSLATION (Format for Groq) ---
         user_payload = build_translation_payload(messages_to_translate)
 
-        # --- 8. PANGGIL API (Groq dengan JSON Object) ---
+        # --- 8. CALL API (Groq with json_object mode) ---
         try:
             chat_completion = await groq_client.chat.completions.create(
                 model=MODEL_GROQ,
@@ -155,8 +158,8 @@ class TranslatorCog(commands.Cog):
                     {"role": "user", "content": user_payload}
                 ],
                 
-                # --- PERBAIKAN INTI ---
-                # Mengganti 'json_schema' dengan 'json_object' yang didukung
+                # --- CORE FIX ---
+                # Use the supported 'json_object' type
                 response_format={
                     "type": "json_object"
                 },
@@ -166,46 +169,49 @@ class TranslatorCog(commands.Cog):
                 timeout=15.0 
             )
             
-            # Output DIJAMIN berupa string JSON yang valid
+            # Output is guaranteed to be a valid JSON string
             raw_output = chat_completion.choices[0].message.content
-            translated_batch = json.loads(raw_output) 
+            json_response = json.loads(raw_output) # This is an Object (dict)
             
-            # Buat kamus/map untuk pemetaan O(1) yang cepat
-            # Kita asumsikan Groq mengikuti prompt kita dan mengembalikan array
-            if isinstance(translated_batch, list):
-                 translation_map = {item['id']: item['tl'] for item in translated_batch if 'id' in item and 'tl' in item}
+            # --- CORE FIX PARSING ---
+            # Extract the array from *within* the JSON Object
+            if "translations" in json_response and isinstance(json_response.get("translations"), list):
+                translated_batch = json_response["translations"] # This is the Array (list)
             else:
-                # Jika Groq mengembalikan dict (bukan list), ini adalah error format
-                print("Translate Error: Groq mengembalikan JSON Object, bukan Array.")
-                raise Exception("Format output tidak sesuai, Groq tidak mengembalikan array.")
+                print("Translate Error: Groq returned a valid JSON Object, but not the expected format (missing 'translations' key).")
+                raise Exception("Format output did not match, 'translations' key missing.")
+
+            # Create a map for fast O(1) lookup
+            translation_map = {item['id']: item['tl'] for item in translated_batch if 'id' in item and 'tl' in item}
 
         except Exception as e:
-            print(f"Translate Error (Groq atau JSON Format): {e}")
+            print(f"Translate Error (Groq or JSON Format): {e}")
             translation_map = {str(msg.id): "[Translation Failed]" for msg in messages_to_translate}
 
-        # --- 9. FORMATTING OUTPUT (Sesuai Keinginan Anda) ---
+        # --- 9. FORMAT OUTPUT (As requested) ---
         output_lines = []
         last_author_id = None
 
         for original_message in messages_to_translate:
+            # Add vertical space if speaker changes
             if last_author_id is not None and last_author_id != original_message.author.id:
-                output_lines.append("") # Jarak vertikal
+                output_lines.append("") 
 
             translated_text = translation_map.get(str(original_message.id), "[Error: No Translation]")
             output_lines.append(f"**{original_message.author.display_name}:** {translated_text}")
             last_author_id = original_message.author.id
 
-        # --- 10. KIRIM KE THREAD ---
+        # --- 10. SEND TO THREAD ---
         try:
             source_channel = self.bot.get_channel(SOURCE_CHANNEL_ID)
             if not source_channel:
-                print("Error: Tidak dapat menemukan SOURCE_CHANNEL_ID")
+                print("Error: Could not find SOURCE_CHANNEL_ID")
                 return
 
             target_thread = source_channel.get_thread(TARGET_THREAD_ID)
             
             if not target_thread:
-                print("Warning: Thread tidak ditemukan, membuat ulang...")
+                print("Warning: Target thread not found, creating new one...")
                 target_thread = await source_channel.create_thread(
                     name=f"{TARGET_LANG.upper()} Translation",
                     type=discord.ChannelType.public_thread
@@ -222,10 +228,10 @@ class TranslatorCog(commands.Cog):
             )
             
             await target_thread.send(embed=embed)
-            print(f"Batching: Sukses mengirim {len(messages_to_translate)} terjemahan.")
+            print(f"Batching: Successfully sent {len(messages_to_translate)} translations.")
 
         except Exception as e:
-            print(f"Discord Error: Gagal mengirim ke thread. {e}")
+            print(f"Discord Error: Failed to send to thread. {e}")
 
 
 # --- 11. SETUP FUNCTION ---
