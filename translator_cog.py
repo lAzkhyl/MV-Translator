@@ -37,9 +37,8 @@ else:
 def build_system_prompt():
     """
     Membangun System Prompt dengan Mini-Dictionary (Few-Shot/CoD).
-    Ini mengkondisikan model untuk menangani slang [cite: 425, 431, 510-514].
+    [cite_start]Ini mengkondisikan model untuk menangani slang [cite: 425, 431, 510-514].
     """
-    # Rekomendasi Intel: 10-15 contoh slang paling umum [cite: 447]
     mini_dictionary = {
         "yg": "that/which/who",
         "gw": "I/me",
@@ -58,7 +57,7 @@ def build_system_prompt():
         "sm": "with/and"
     }
     
-    # Format Llama 3.1 Instruct [cite: 510]
+    # Format Llama 3.1 Instruct
     prompt = f"""<|start_header_id|>system<|end_header_id|>
 Anda adalah layanan terjemahan API yang sangat efisien dan akurat.
 Tugas Anda adalah menerjemahkan batch pesan obrolan dari bahasa Indonesia informal (termasuk bahasa gaul berat, typo, dan campuran) ke {TARGET_LANG} yang natural dan akurat.
@@ -72,8 +71,8 @@ PERATURAN UTAMA:
 KAMUS SLANG (GUNAKAN SEBAGAI REFERENSI KUNCI):
 {json.dumps(mini_dictionary)}
 
-Input akan berupa array JSON dari objek `{"id": "...", "u": "...", "t": "..."}`.
-Output Anda HARUS berupa array JSON yang divalidasi skema dari objek `{"id": "...", "tl": "..."}`.<|eot_id|>
+Input akan berupa array JSON dari objek `{{"id": "...", "u": "...", "t": "..."}}`.
+Output Anda HARUS berupa array JSON yang divalidasi skema dari objek `{{"id": "...", "tl": "..."}}`.<|eot_id|>
 """
     return prompt
 
