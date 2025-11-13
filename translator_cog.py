@@ -34,10 +34,12 @@ else:
 
 # --- 3. HELPER FUNGSI ARSITEKTUR (Berdasarkan Intel) ---
 
+# GANTI FUNGSI LAMA ANDA DENGAN INI:
+
 def build_system_prompt():
     """
     Membangun System Prompt dengan Mini-Dictionary (Few-Shot/CoD).
-    [cite_start]Ini mengkondisikan model untuk menangani slang [cite: 425, 431, 510-514].
+    Menggunakan .format() untuk menghindari ValueError dari f-string.
     """
     mini_dictionary = {
         "yg": "that/which/who",
@@ -57,10 +59,12 @@ def build_system_prompt():
         "sm": "with/and"
     }
     
-    # Format Llama 3.1 Instruct
-    prompt = f"""<|start_header_id|>system<|end_header_id|>
+    # --- PERBAIKAN ---
+    # Kita HAPUS 'f' dari f-string. Ini sekarang string template biasa.
+    # Kita gunakan placeholder {target_lang} dan {dictionary_json}
+    prompt_template = """<|start_header_id|>system<|end_header_id|>
 Anda adalah layanan terjemahan API yang sangat efisien dan akurat.
-Tugas Anda adalah menerjemahkan batch pesan obrolan dari bahasa Indonesia informal (termasuk bahasa gaul berat, typo, dan campuran) ke {TARGET_LANG} yang natural dan akurat.
+Tugas Anda adalah menerjemahkan batch pesan obrolan dari bahasa Indonesia informal (termasuk bahasa gaul berat, typo, dan campuran) ke {target_lang} yang natural dan akurat.
 
 PERATURAN UTAMA:
 1. Terjemahkan HANYA nilai "t" (teks) untuk setiap objek dalam array JSON yang diberikan.
@@ -69,27 +73,34 @@ PERATURAN UTAMA:
 4. Kembalikan HANYA array JSON yang divalidasi skema.
 
 KAMUS SLANG (GUNAKAN SEBAGAI REFERENSI KUNCI):
-{json.dumps(mini_dictionary)}
+{dictionary_json}
 
 Input akan berupa array JSON dari objek `{{"id": "...", "u": "...", "t": "..."}}`.
 Output Anda HARUS berupa array JSON yang divalidasi skema dari objek `{{"id": "...", "tl": "..."}}`.<|eot_id|>
 """
-    return prompt
+    # Kita tetap menggunakan {{ dan }} untuk escape kurung kurawal contoh
+    
+    # Kita isi placeholder menggunakan .format()
+    return prompt_template.format(
+        target_lang=TARGET_LANG,
+        dictionary_json=json.dumps(mini_dictionary)
+    )
 
 def build_translation_payload(message_batch: list) -> str:
     """
-    Mengonversi batch pesan dari Discord menjadi payload JSON minified[cite: 518].
-    Ini sangat efisien token[cite: 481].
+    Mengonversi batch pesan dari Discord menjadi payload JSON minified.
     """
     payload = []
     for msg in message_batch:
         payload.append({
-            "id": str(msg.id), # Gunakan ID pesan untuk pemetaan [cite: 466]
+            "id": str(msg.id), # Pastikan ID adalah string
             "u": msg.author.display_name, # 'u' = user
             "t": msg.content # 't' = text
         })
-    # Menggunakan minified JSON (tanpa spasi) [cite: 519]
+    # Menggunakan minified JSON (tanpa spasi)
     return json.dumps(payload, separators=(',', ':'))
+
+# (Sisa kode Anda tetap sama)
 
 def define_output_schema() -> dict:
     """
